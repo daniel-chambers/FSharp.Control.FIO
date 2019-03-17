@@ -1,0 +1,7 @@
+STORAGE: NONE
+RESTRICTION: == netstandard2.0
+NUGET
+  remote: https://www.nuget.org/api/v2
+    FSharp.Core (4.6.2)
+    FSharpPlus (1.0)
+      FSharp.Core (>= 4.3.4)
