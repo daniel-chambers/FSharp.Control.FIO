@@ -8,10 +8,7 @@ type IConsoleService =
   abstract member WriteLine : string -> FIO<'Env, 'Error, unit>
   abstract member ReadLine : unit -> FIO<'Env, IOException, string>
 
-type IHasConsole =
-  abstract member Console : IConsoleService
-
-let console =
+let consoleService =
   { new IConsoleService with
       member __.WriteLine str =
         FIO.fromPureSync (fun () -> Console.WriteLine str)
@@ -24,35 +21,64 @@ let console =
         )
   }
 
+type IHasConsole =
+  abstract member Console : IConsoleService
+
 module Console =
-  let writeLine str = FIO.environment |> FIO.bind (fun (c : #IHasConsole) -> c.Console.WriteLine str)
-  let readLine () = FIO.environment |> FIO.bind (fun (c : #IHasConsole) -> c.Console.ReadLine ())
+  let writeLine str = FIO.accessEnvM (fun (c : #IHasConsole) -> c.Console.WriteLine str)
+  let readLine () = FIO.accessEnvM (fun (c : #IHasConsole) -> c.Console.ReadLine ())
 
-type ILoggingService =
-  abstract member Log : string -> FIO<'r, 'Error, unit>
+type IPersistenceService =
+  abstract member Persist : string -> FIO<'r, 'Error, unit>
 
-type IHasLogging =
-  abstract member Logging : ILoggingService
+let persistenceService =
+  { new IPersistenceService with
+    member __.Persist str =
+      FIO.fromPureSync (fun () -> Console.WriteLine ("Persisted: " + str))
+  }
+
+type IHasPersistence =
+  abstract member Persistence : IPersistenceService
+
+module Persistence =
+  let persist str = FIO.accessEnvM (fun (p : #IHasPersistence) -> p.Persistence.Persist str)
 
 type RealEnv() =
-  interface IHasConsole with member __.Console = console
+  interface IHasConsole with member __.Console = consoleService
+  interface IHasPersistence with member __.Persistence = persistenceService
 
 type Errors =
   | ConsoleException of IOException
   | NoInput
 
+let validateInput input =
+  if not <| String.IsNullOrWhiteSpace input then
+    FIO.succeed input
+  else
+    FIO.fail NoInput
+
+let rec readInputFromConsole () =
+  fio {
+    do! Console.writeLine "Enter some input:"
+    let! line = Console.readLine () |> FIO.mapError ConsoleException
+    return!
+      validateInput line
+      |> FIO.catch (fun error ->
+        match error with
+        | NoInput ->
+          fio {
+            do! Console.writeLine "Try again."
+            return! readInputFromConsole ()
+          }
+        | ex -> FIO.fail ex
+      )
+  }
+
 [<EntryPoint>]
 let main argv =
   let result =
-    fio {
-      do! Console.writeLine "Enter some input:"
-      let! line = Console.readLine () |> FIO.mapError ConsoleException
-      return!
-        if not <| String.IsNullOrWhiteSpace line then
-          FIO.succeed line
-        else
-          FIO.fail NoInput
-    }
+    readInputFromConsole ()
+    |> FIO.bind (fun line -> Persistence.persist line |> FIO.mapResult (fun _ -> line))
     |> FIO.runFIOSynchronously (RealEnv())
   match result with
   | Ok str -> Console.WriteLine ("Your input: " + str)

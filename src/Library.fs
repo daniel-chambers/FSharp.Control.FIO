@@ -6,6 +6,9 @@ module FIO =
   open FSharpPlus
   open System.Threading.Tasks
 
+  // type Void private () =
+  //     do raise (System.NotImplementedException "No instances of this type should exist")
+
   [<NoEquality;NoComparison>]
   type FIO<'Env, 'Error, 'Result> =
     private | FIO of ('Env -> Async<Result<'Result, 'Error>>)
@@ -66,6 +69,29 @@ module FIO =
         return Error error
     }
 
+  let catch (handler : 'ErrorA -> FIO<'Env, 'ErrorB, 'Result>) (FIO readerFn : FIO<'Env, 'ErrorA, 'Result>) =
+    FIO <| fun env -> async {
+      match! readerFn env with
+      | Ok result ->
+        return Ok result
+      | Error error ->
+        let (FIO handlerReaderFn) = handler error
+        return! handlerReaderFn env
+    }
+
+  let inline orElse (that : FIO<'Env, 'ErrorB, 'Result>) (this : FIO<'Env, 'ErrorA, 'Result>) =
+    this |> catch (fun _ -> that)
+
+  //TODO: Should release's error type be Void? Is this important for correctness?
+  // let bracket (release : FIO<'Env, 'Error, unit>) (useFn : 'Resource -> FIO<'Env, 'Error, 'Result>) (acquire : FIO<'Env, 'Error, 'Resource>) =
+  //   FIO <| fun env -> async {
+  //     try
+  //       let (FIO readerFn) = (acquire |> bind useFn)
+  //       readerFn env
+  //     finally
+  //       release //UGH: Finally blocks are unit -> unit.
+  //   }
+
   // TODO: will this blow the stack on a long seq?
   let traverse (fn : 'a -> FIO<'Env, 'Error, 'Result>) (sequence : 'a seq) : FIO<'Env, 'Error, 'Result list> =
     sequence
@@ -119,6 +145,11 @@ module FIO =
   let inline fromOption (error : 'Error) (opt : 'Result option) =
     opt |> Option.map Ok |> Option.defaultValue (Error error) |> fromResult
 
+  //TODO: Could 'NoError be Void?
+  let toResult (FIO readerFn : FIO<'Env, 'Error, 'Result>) : FIO<'Env, 'NoError, Result<'Result, 'Error>> =
+    FIO <| fun env ->
+      readerFn env |> map Ok
+
   type FIOBuilder() =
     member inline __.Bind(fio : FIO<'Env, 'Error, 'ResultA>, fn : 'ResultA -> FIO<'Env, 'Error, 'ResultB>) =
       bind fn fio
@@ -132,6 +163,7 @@ module FIO =
       (fun _ r -> r) <!> fio1 <*> fio2
     member inline __.For(sequence : 'a seq, body : 'a -> FIO<'Env, 'Error, unit>) =
       traverseIgnore body sequence
+    //TODO: Using
 
 [<AutoOpen>]
 module FIOAutoOpen =
