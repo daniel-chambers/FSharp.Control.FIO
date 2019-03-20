@@ -1,17 +1,17 @@
-﻿namespace FSharp.Control
+﻿namespace FSharp.Control.FIO
+
+open System
 open System.Threading
-open System
-open System
+
+[<NoEquality;NoComparison>]
+type FIO<'Env, 'Error, 'Result> =
+  private | FIO of ('Env -> Async<Result<'Result, 'Error>>)
 
 [<RequireQualifiedAccess>]
 module FIO =
 
   open FSharpPlus
   open System.Threading.Tasks
-
-  [<NoEquality;NoComparison>]
-  type FIO<'Env, 'Error, 'Result> =
-    private | FIO of ('Env -> Async<Result<'Result, 'Error>>)
 
   let runFIOAsync (env : 'Env) (FIO readerFn) : Async<Result<'Result, 'Error>> =
     readerFn env

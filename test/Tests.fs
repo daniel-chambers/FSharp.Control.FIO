@@ -2,7 +2,6 @@ module FSharp.Control.FIO.Tests
 
 open System
 open System.IO
-open FSharp.Control
 
 type IConsoleService =
   abstract member WriteLine : string -> FIO<'Env, 'Error, unit>
@@ -45,7 +44,7 @@ type Errors =
   | ConsoleException of IOException
   | NoInput
 
-let validateInput input =
+let validateInput input : FIO<'Env, Errors, string> =
   if not <| String.IsNullOrWhiteSpace input then
     FIO.succeed input
   else
