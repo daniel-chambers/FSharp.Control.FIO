@@ -28,24 +28,18 @@ module Console =
   let writeLine str = FIO.accessEnvM (fun (c : #IHasConsole) -> c.Console.WriteLine str)
   let readLine () = FIO.accessEnvM (fun (c : #IHasConsole) -> c.Console.ReadLine ())
 
-type IPersistenceService =
-  abstract member Persist : string -> FIO<'r, 'Error, unit>
-
-let persistenceService =
-  { new IPersistenceService with
-    member __.Persist str =
-      FIO.fromPureSync (fun () -> Console.WriteLine ("Persisted: " + str))
-  }
+let persistenceImpl str =
+  FIO.fromPureSync (fun () -> Console.WriteLine ("Persisted: " + str))
 
 type IHasPersistence =
-  abstract member Persistence : IPersistenceService
+  abstract member Persist : string -> FIO<'r, 'Error, unit>
 
 module Persistence =
-  let persist str = FIO.accessEnvM (fun (p : #IHasPersistence) -> p.Persistence.Persist str)
+  let persist str = FIO.accessEnvM (fun (p : #IHasPersistence) -> p.Persist str)
 
 type RealEnv() =
   interface IHasConsole with member __.Console = consoleService
-  interface IHasPersistence with member __.Persistence = persistenceService
+  interface IHasPersistence with member __.Persist str = persistenceImpl str
 
 type Errors =
   | ConsoleException of IOException
