@@ -1,13 +1,13 @@
 ﻿namespace FSharp.Control
+open System.Threading
+open System
+open System
 
 [<RequireQualifiedAccess>]
 module FIO =
 
   open FSharpPlus
   open System.Threading.Tasks
-
-  // type Void private () =
-  //     do raise (System.NotImplementedException "No instances of this type should exist")
 
   [<NoEquality;NoComparison>]
   type FIO<'Env, 'Error, 'Result> =
@@ -82,15 +82,98 @@ module FIO =
   let inline orElse (that : FIO<'Env, 'ErrorB, 'Result>) (this : FIO<'Env, 'ErrorA, 'Result>) =
     this |> catch (fun _ -> that)
 
-  //TODO: Should release's error type be Void? Is this important for correctness?
-  // let bracket (release : FIO<'Env, 'Error, unit>) (useFn : 'Resource -> FIO<'Env, 'Error, 'Result>) (acquire : FIO<'Env, 'Error, 'Resource>) =
-  //   FIO <| fun env -> async {
-  //     try
-  //       let (FIO readerFn) = (acquire |> bind useFn)
-  //       readerFn env
-  //     finally
-  //       release //UGH: Finally blocks are unit -> unit.
-  //   }
+  type Microsoft.FSharp.Control.Async with
+    static member TryFinallyAsync comp deferred =
+
+        let finish (compResult, deferredResult) (cont, econt, ccont) =
+            match (compResult, deferredResult) with
+            | (Choice1Of3 (),      Choice1Of3 ())          -> cont ()
+            | (Choice2Of3 compExn, Choice1Of3 ())          -> econt compExn
+            | (Choice3Of3 compExn, Choice1Of3 ())          -> ccont compExn
+            | (Choice1Of3 (),      Choice2Of3 deferredExn) -> econt deferredExn
+            | (Choice2Of3 compExn, Choice2Of3 deferredExn) -> econt <| new Exception(deferredExn.Message, compExn)
+            | (Choice3Of3 compExn, Choice2Of3 deferredExn) -> econt deferredExn
+            | (_,                  Choice3Of3 deferredExn) -> econt <| new Exception("Unexpected cancellation.", deferredExn)
+
+        let startDeferred compResult (cont, econt, ccont) =
+            Async.StartWithContinuations(deferred,
+                (fun ()  -> finish (compResult, Choice1Of3 ())  (cont, econt, ccont)),
+                (fun exn -> finish (compResult, Choice2Of3 exn) (cont, econt, ccont)),
+                (fun exn -> finish (compResult, Choice3Of3 exn) (cont, econt, ccont)))
+
+        let startComp ct (cont, econt, ccont) =
+            Async.StartWithContinuations(comp,
+                (fun ()  -> startDeferred (Choice1Of3 ())  (cont, econt, ccont)),
+                (fun exn -> startDeferred (Choice2Of3 exn) (cont, econt, ccont)),
+                (fun exn -> startDeferred (Choice3Of3 exn) (cont, econt, ccont)),
+                ct)
+
+        async { let! ct = Async.CancellationToken
+                do! Async.FromContinuations (startComp ct) }
+
+  type Void private () =
+      do raise (System.NotImplementedException "No instances of this type should exist")
+
+  type private ContinuationResult<'a> =
+    | Completed of 'a
+    | Crashed of exn
+    | Cancelled of OperationCanceledException
+
+  let bracket (release : FIO<'Env, Void, unit>) (use' : 'Resource -> FIO<'Env, 'Error, 'Result>) (acquire : FIO<'Env, 'Error, 'Resource>) =
+
+    let callCallbacks useResult releaseResult (successCallback, errorCallback, cancelledCallback) =
+      match (useResult, releaseResult) with
+      | (Completed result, Completed _  ) -> successCallback result
+      | (Completed _,      Crashed   ex ) -> errorCallback ex
+      | (Completed _,      Cancelled ex ) -> errorCallback <| Exception ("Unexpected cancellation: bracket release async was cancelled", ex)
+      | (Crashed   ex,     Completed _  ) -> errorCallback ex
+      | (Crashed   ex1,    Crashed   ex2) -> errorCallback <| AggregateException([| ex1; ex2 |])
+      | (Crashed   ex1,    Cancelled ex2) -> errorCallback <| AggregateException([| ex1; Exception ("Unexpected cancellation: bracket release async was cancelled", ex2) |])
+      | (Cancelled ex,     Completed _  ) -> cancelledCallback ex
+      | (Cancelled ex1,    Crashed   ex2) -> errorCallback <| AggregateException([| ex1 :> Exception; ex2 |])
+      | (Cancelled ex1,    Cancelled ex2) -> errorCallback <| AggregateException([| ex1 :> Exception; Exception ("Unexpected cancellation: bracket release async was cancelled", ex2) |])
+
+    let startRelease env useResult callbacks =
+      let (FIO releaseReaderFn) = release
+      let releaseAsync = releaseReaderFn env
+      Async.StartWithContinuations (
+        releaseAsync,
+        (fun result -> callCallbacks useResult (Completed result) callbacks),
+        (fun ex     -> callCallbacks useResult (Crashed ex)       callbacks),
+        (fun ex     -> callCallbacks useResult (Cancelled ex)     callbacks),
+        CancellationToken.None) //No cancellation allowed during release
+
+    let startUse env resource cancellationToken callbacks =
+      let (FIO useReaderFn) = use' resource
+      let useAsync = useReaderFn env
+      Async.StartWithContinuations (
+        useAsync,
+        (fun result -> startRelease env (Completed result) callbacks),
+        (fun ex     -> startRelease env (Crashed ex)       callbacks),
+        (fun ex     -> startRelease env (Cancelled ex)     callbacks),
+        cancellationToken) //Original async workflow's cancellation token used
+
+    let startAcquire env cancellationToken (successCallback, errorCallback, cancelledCallback) =
+      let (FIO acquireReaderFn) = acquire
+      let acquireAsync = acquireReaderFn env
+      Async.StartWithContinuations (
+        acquireAsync,
+        (fun result ->
+          match result with
+          | Ok resource ->
+            startUse env resource cancellationToken (successCallback, errorCallback, cancelledCallback)
+          | Error error ->
+            successCallback <| Error error
+        ),
+        errorCallback,
+        cancelledCallback,
+        CancellationToken.None) //No cancellation allowed during acquire
+
+    FIO <| fun env ->
+      async {
+        let! cancellationToken = Async.CancellationToken
+        return! Async.FromContinuations (startAcquire env cancellationToken)
+      }
 
   // TODO: will this blow the stack on a long seq?
   let traverse (fn : 'a -> FIO<'Env, 'Error, 'Result>) (sequence : 'a seq) : FIO<'Env, 'Error, 'Result list> =
@@ -145,7 +228,6 @@ module FIO =
   let inline fromOption (error : 'Error) (opt : 'Result option) =
     opt |> Option.map Ok |> Option.defaultValue (Error error) |> fromResult
 
-  //TODO: Could 'NoError be Void?
   let toResult (FIO readerFn : FIO<'Env, 'Error, 'Result>) : FIO<'Env, 'NoError, Result<'Result, 'Error>> =
     FIO <| fun env ->
       readerFn env |> map Ok
@@ -163,7 +245,9 @@ module FIO =
       (fun _ r -> r) <!> fio1 <*> fio2
     member inline __.For(sequence : 'a seq, body : 'a -> FIO<'Env, 'Error, unit>) =
       traverseIgnore body sequence
-    //TODO: Using
+    //TODO: Using and TryFinally
+    //TODO: While
+    //TODO: Zero?
 
 [<AutoOpen>]
 module FIOAutoOpen =
