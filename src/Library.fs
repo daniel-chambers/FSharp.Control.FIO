@@ -82,37 +82,8 @@ module FIO =
   let inline orElse (that : FIO<'Env, 'ErrorB, 'Result>) (this : FIO<'Env, 'ErrorA, 'Result>) =
     this |> catch (fun _ -> that)
 
-  type Microsoft.FSharp.Control.Async with
-    static member TryFinallyAsync comp deferred =
-
-        let finish (compResult, deferredResult) (cont, econt, ccont) =
-            match (compResult, deferredResult) with
-            | (Choice1Of3 (),      Choice1Of3 ())          -> cont ()
-            | (Choice2Of3 compExn, Choice1Of3 ())          -> econt compExn
-            | (Choice3Of3 compExn, Choice1Of3 ())          -> ccont compExn
-            | (Choice1Of3 (),      Choice2Of3 deferredExn) -> econt deferredExn
-            | (Choice2Of3 compExn, Choice2Of3 deferredExn) -> econt <| new Exception(deferredExn.Message, compExn)
-            | (Choice3Of3 compExn, Choice2Of3 deferredExn) -> econt deferredExn
-            | (_,                  Choice3Of3 deferredExn) -> econt <| new Exception("Unexpected cancellation.", deferredExn)
-
-        let startDeferred compResult (cont, econt, ccont) =
-            Async.StartWithContinuations(deferred,
-                (fun ()  -> finish (compResult, Choice1Of3 ())  (cont, econt, ccont)),
-                (fun exn -> finish (compResult, Choice2Of3 exn) (cont, econt, ccont)),
-                (fun exn -> finish (compResult, Choice3Of3 exn) (cont, econt, ccont)))
-
-        let startComp ct (cont, econt, ccont) =
-            Async.StartWithContinuations(comp,
-                (fun ()  -> startDeferred (Choice1Of3 ())  (cont, econt, ccont)),
-                (fun exn -> startDeferred (Choice2Of3 exn) (cont, econt, ccont)),
-                (fun exn -> startDeferred (Choice3Of3 exn) (cont, econt, ccont)),
-                ct)
-
-        async { let! ct = Async.CancellationToken
-                do! Async.FromContinuations (startComp ct) }
-
   type Void private () =
-      do raise (System.NotImplementedException "No instances of this type should exist")
+    do raise (System.NotImplementedException "No instances of this type should exist")
 
   type private ContinuationResult<'a> =
     | Completed of 'a
@@ -248,6 +219,8 @@ module FIO =
     //TODO: Using and TryFinally
     //TODO: While
     //TODO: Zero?
+    //TODO: FSharpPlus support
+    //TODO: Concurrency support
 
 [<AutoOpen>]
 module FIOAutoOpen =
