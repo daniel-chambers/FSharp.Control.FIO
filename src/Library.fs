@@ -1,6 +1,7 @@
 ﻿namespace FSharp.Control.FIO
 
 open System
+open System.Collections.Generic
 open System.Threading
 
 [<NoEquality;NoComparison>]
@@ -146,23 +147,39 @@ module FIO =
         return! Async.FromContinuations (startAcquire env cancellationToken)
       }
 
-  // TODO: will this blow the stack on a long seq?
   let traverse (fn : 'a -> FIO<'Env, 'Error, 'Result>) (sequence : 'a seq) : FIO<'Env, 'Error, 'Result list> =
-    sequence
-    |> Seq.fold (fun prev item ->
-      prev |> bind (fun list ->
-        fn item |> mapResult (fun (r : 'Result) -> r :: list)
-      )
-    ) (succeed [])
-    |> mapResult List.rev //TODO: check the order of the list
+    FIO <| fun env ->
+      let rec step (enumerator : 'a IEnumerator) results = async {
+        if enumerator.MoveNext () then
+          let (FIO readerFn) = fn enumerator.Current
+          match! readerFn env with
+          | Ok result -> return! step enumerator (result :: results)
+          | Error err -> return Error err
+        else
+          return Ok results
+      }
+      async {
+        let enumerator = sequence.GetEnumerator()
+        let! results = step enumerator []
+        return results |> Result.map List.rev
+      }
 
-  // TODO: will this blow the stack on a long seq?
   let traverseIgnore (fn : 'a -> FIO<'Env, 'Error, unit>) (sequence : 'a seq) : FIO<'Env, 'Error, unit> =
-    sequence
-    |> Seq.fold (fun prev item ->
-      prev |> bind (fun () -> fn item)
-    ) (succeed ())
-
+    FIO <| fun env ->
+      let rec step (enumerator : 'a IEnumerator) = async {
+        if enumerator.MoveNext () then
+          let (FIO readerFn) = fn enumerator.Current
+          match! readerFn env with
+          | Ok () -> return! step enumerator
+          | Error err -> return Error err
+        else
+          return Ok ()
+      }
+      async {
+        let enumerator = sequence.GetEnumerator()
+        let! results = step enumerator
+        return results
+      }
 
   let fromPureSync (syncFn : unit -> 'Result) : FIO<'Env, 'Error, 'Result> =
     FIO <| fun _ ->
