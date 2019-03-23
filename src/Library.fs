@@ -147,6 +147,17 @@ module FIO =
         return! Async.FromContinuations (startAcquire env cancellationToken)
       }
 
+  let tryFinally (release : unit -> unit) (FIO readerFn : FIO<'Env, 'Error, 'Result>) : FIO<'Env, 'Error, 'Result> =
+    FIO <| fun env ->
+      async.TryFinally(readerFn env, release)
+
+  let using (resource : #IDisposable) (body : #IDisposable -> FIO<'Env, 'Error, 'Result>) : FIO<'Env, 'Error, 'Result> =
+    FIO <| fun env ->
+      async.Using(resource, fun r ->
+        let (FIO readerFn) = body r
+        readerFn env
+      )
+
   let traverse (fn : 'a -> FIO<'Env, 'Error, 'Result>) (sequence : 'a seq) : FIO<'Env, 'Error, 'Result list> =
     FIO <| fun env ->
       let rec step (enumerator : 'a IEnumerator) results = async {
@@ -159,7 +170,7 @@ module FIO =
           return Ok results
       }
       async {
-        let enumerator = sequence.GetEnumerator()
+        use enumerator = sequence.GetEnumerator()
         let! results = step enumerator []
         return results |> Result.map List.rev
       }
@@ -176,7 +187,7 @@ module FIO =
           return Ok ()
       }
       async {
-        let enumerator = sequence.GetEnumerator()
+        use enumerator = sequence.GetEnumerator()
         let! results = step enumerator
         return results
       }
@@ -233,9 +244,17 @@ module FIO =
       (fun _ r -> r) <!> fio1 <*> fio2
     member inline __.For(sequence : 'a seq, body : 'a -> FIO<'Env, 'Error, unit>) =
       traverseIgnore body sequence
-    //TODO: Using and TryFinally
-    //TODO: While
-    //TODO: Zero?
+    member inline __.Using(resource : #IDisposable, body : #IDisposable -> FIO<'Env, 'Error, 'Result>) =
+      using resource body
+    member inline __.TryFinally((fio : FIO<'Env, 'Error, 'Result>), compensation) =
+      tryFinally compensation fio
+    member __.While (guard, (fio : FIO<'Env, 'Error, unit>)) =
+      let infiniteSeq = seq {
+        while guard () do
+          yield ()
+      }
+      traverseIgnore (fun _ -> fio) infiniteSeq
+
     //TODO: FSharpPlus support
     //TODO: Concurrency support
 
