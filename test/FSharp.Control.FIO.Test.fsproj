@@ -1,13 +1,13 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>netcoreapp2.2</TargetFramework>
     <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp2.2</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../src/FSharp.Control.FIO.fsproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="FSharpPlusTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>
   <Import Project="..\.paket\Paket.Restore.targets" />

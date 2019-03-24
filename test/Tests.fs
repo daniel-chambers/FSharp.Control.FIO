@@ -1,7 +1,8 @@
-module FSharp.Control.FIO.Tests
+module FSharp.Control.FIO.Test.Tests
 
 open System
 open System.IO
+open FSharp.Control.FIO
 
 type IConsoleService =
   abstract member WriteLine : string -> FIO<'Env, 'Error, unit>

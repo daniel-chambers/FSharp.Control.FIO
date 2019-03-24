@@ -1,4 +1,4 @@
-﻿namespace FSharp.Control.FIO
+namespace FSharp.Control.FIO
 
 open System
 open System.Collections.Generic
@@ -11,8 +11,18 @@ type FIO<'Env, 'Error, 'Result> =
 [<RequireQualifiedAccess>]
 module FIO =
 
-  open FSharpPlus
   open System.Threading.Tasks
+
+  let inline private asyncMap fn async' = async.Bind(async', async.Return << fn)
+  let inline private asyncApply aFn async' = async.Bind(aFn, fun fn -> async.Bind(async', async.Return << fn))
+  let inline private resultApply rFn result =
+    match (rFn, result) with
+    | (Ok rFn,  Ok x   ) -> Ok (rFn x)
+    | (Error e, _      ) -> Error e
+    | (_      , Error e) -> Error e
+  let inline choiceEither fn1 fn2 = function
+    | Choice1Of2 x -> fn1 x
+    | Choice2Of2 x -> fn2 x
 
   let runFIOAsync (env : 'Env) (FIO readerFn) : Async<Result<'Result, 'Error>> =
     readerFn env
@@ -47,18 +57,20 @@ module FIO =
 
   let mapResult (fn : 'ResultA -> 'ResultB) (FIO readerFn : FIO<'Env, 'Error, 'ResultA>) =
     FIO <| fun env ->
-      readerFn env |> map (map fn)
+      readerFn env |> asyncMap (Result.map fn)
 
   let mapError (fn : 'ErrorA -> 'ErrorB) (FIO readerFn : FIO<'Env, 'ErrorA, 'Result>) =
     FIO <| fun env ->
-      readerFn env |> map (fun x -> Result.mapError fn x)
+      readerFn env |> asyncMap (fun x -> Result.mapError fn x)
 
   let inline bimap (errorFn : 'ErrorA -> 'ErrorB) (resultFn : 'ResultA -> 'ResultB) =
     mapError errorFn >> mapResult resultFn
 
   let apply (FIO fnReaderFn : FIO<'Env, 'Error, ('ResultA -> 'ResultB)>) (FIO argReaderFn : FIO<'Env, 'Error, 'ResultA>) =
     FIO <| fun env ->
-      (<*>) <!> fnReaderFn env <*> argReaderFn env
+      let inline (<!>) f x = asyncMap f x
+      let inline (<*>) f x = asyncApply f x
+      (resultApply) <!> fnReaderFn env <*> argReaderFn env
 
   let bind (fn : 'ResultA -> FIO<'Env, 'Error, 'ResultB>) (FIO readerFn : FIO<'Env, 'Error, 'ResultA>) =
     FIO <| fun env -> async {
@@ -82,6 +94,9 @@ module FIO =
 
   let inline orElse (that : FIO<'Env, 'ErrorB, 'Result>) (this : FIO<'Env, 'ErrorA, 'Result>) =
     this |> catch (fun _ -> that)
+
+  let inline join (nested : FIO<'Env, 'Error, FIO<'Env, 'Error, 'Result>>) =
+    bind id nested
 
   type Void private () =
     do raise (System.NotImplementedException "No instances of this type should exist")
@@ -209,7 +224,7 @@ module FIO =
 
   let fromAsync (async : Async<'Result>) : FIO<'Env, exn, 'Result> =
     FIO <| fun _ ->
-      async |> Async.Catch |> map (Choice.either Ok Error)
+      async |> Async.Catch |> asyncMap (choiceEither Ok Error)
 
   let inline fromTask (task : Task<'Result>) : FIO<'Env, exn, 'Result> =
     task |> Async.AwaitTask |> fromAsync
@@ -219,17 +234,17 @@ module FIO =
       async.Return result
 
   let inline fromChoice (choice : Choice<'Result, 'Error>) =
-    choice |> Choice.either Ok Error |> fromResult
+    choice |> choiceEither Ok Error |> fromResult
 
   let inline fromChoice' (choice : Choice<'Error, 'Result>) =
-    choice |> Choice.either Error Ok |> fromResult
+    choice |> choiceEither Error Ok |> fromResult
 
   let inline fromOption (error : 'Error) (opt : 'Result option) =
     opt |> Option.map Ok |> Option.defaultValue (Error error) |> fromResult
 
   let toResult (FIO readerFn : FIO<'Env, 'Error, 'Result>) : FIO<'Env, 'NoError, Result<'Result, 'Error>> =
     FIO <| fun env ->
-      readerFn env |> map Ok
+      readerFn env |> asyncMap Ok
 
   type FIOBuilder() =
     member inline __.Bind(fio : FIO<'Env, 'Error, 'ResultA>, fn : 'ResultA -> FIO<'Env, 'Error, 'ResultB>) =
@@ -261,3 +276,26 @@ module FIO =
 [<AutoOpen>]
 module FIOAutoOpen =
   let fio = FIO.FIOBuilder ()
+
+// Functions that FSharpPlus looks for for its generic functions and operators
+type FIO<'Env, 'Error, 'Result> with
+  static member inline Map (fio : FIO<'Env, 'Error, 'ResultA>, f : 'ResultA -> 'ResultB) =
+    FIO.mapResult f fio
+
+  static member inline MapFirst (fio : FIO<'Env, 'ErrorA, 'Result>, f : 'ErrorA -> 'ErrorB) =
+    FIO.mapError f fio
+
+  static member inline Bimap (fio : FIO<'Env, 'ErrorA, 'ResultA>, first , second) =
+    FIO.bimap first second fio
+
+  static member inline Return x : FIO<'Env, 'Error, 'Result> =
+    FIO.succeed x
+
+  static member inline (<*>) (f : FIO<'Env, 'Error, 'ResultA -> 'ResultB>, x : FIO<'Env, 'Error, 'ResultA>) =
+    FIO.apply f x
+
+  static member inline (>>=) (source : FIO<'Env, 'Error, 'ResultA>, f : 'ResultA -> FIO<'Env, 'Error, 'ResultB>) =
+    FIO.bind f source
+
+  static member inline Join (nested : FIO<'Env, 'Error, FIO<'Env, 'Error, 'Result>>) =
+    FIO.join nested
