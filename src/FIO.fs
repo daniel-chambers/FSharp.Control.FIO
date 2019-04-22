@@ -208,12 +208,14 @@ module FIO =
       }
 
   let fromPureSync (syncFn : unit -> 'Result) : FIO<'Env, 'Error, 'Result> =
-    FIO <| fun _ ->
-      async.Return << Ok <| syncFn ()
+    FIO <| fun _ -> async {
+      return Ok <| syncFn ()
+    }
 
   let fromPureSync' (syncFn : unit -> Result<'Result, 'Error>) : FIO<'Env, 'Error, 'Result> =
-    FIO <| fun _ ->
-      async.Return <| syncFn ()
+    FIO <| fun _ -> async {
+      return syncFn ()
+    }
 
   let fromImpureSync (syncFn : unit -> 'Result) : FIO<'Env, exn, 'Result> =
     FIO <| fun _ ->
@@ -247,6 +249,12 @@ module FIO =
       readerFn env |> asyncMap Ok
 
   type FIOBuilder() =
+    member __.Delay(delayed : unit -> FIO<'Env, 'Error, 'Result>) =
+      FIO <| fun env -> async {
+        let (FIO readerFn) = delayed ()
+        return! readerFn env
+      }
+
     member inline __.Bind(fio : FIO<'Env, 'Error, 'ResultA>, fn : 'ResultA -> FIO<'Env, 'Error, 'ResultB>) =
       bind fn fio
     member inline __.Return(value : 'Result) : FIO<'Env, 'Error, 'Result> =
@@ -270,7 +278,6 @@ module FIO =
       }
       traverseIgnore (fun _ -> fio) infiniteSeq
 
-    //TODO: FSharpPlus support
     //TODO: Concurrency support
 
 [<AutoOpen>]
@@ -279,6 +286,9 @@ module FIOAutoOpen =
 
 // Functions that FSharpPlus looks for for its generic functions and operators
 type FIO<'Env, 'Error, 'Result> with
+  static member inline Delay (delayed : unit -> FIO<'Env, 'Error, 'Result>) =
+    fio.Delay delayed
+
   static member inline Map (fio : FIO<'Env, 'Error, 'ResultA>, f : 'ResultA -> 'ResultB) =
     FIO.mapResult f fio
 
@@ -299,3 +309,22 @@ type FIO<'Env, 'Error, 'Result> with
 
   static member inline Join (nested : FIO<'Env, 'Error, FIO<'Env, 'Error, 'Result>>) =
     FIO.join nested
+
+  static member inline Using(resource : #IDisposable, body : #IDisposable -> FIO<'Env, 'Error, 'Result>) =
+    FIO.using resource body
+
+  static member inline TryFinally (fio : FIO<'Env, 'Error, 'Result>, handler : unit -> unit) =
+    FIO.tryFinally handler fio
+
+  // The use of Try With blocks with FIO is highly discouraged
+  // (since the point is to not throw recoverable exceptions!)
+  // but FSharpPlus has a default implementation of this which is wrong,
+  // so it's better to provide a working solution than have a broken one
+  // that compiles but doesn't work
+  static member TryWith (fio : FIO<'Env, 'Error, 'Result>, handler : exn -> FIO<'Env, 'Error, 'Result>) =
+    FIO <| fun env ->
+      let (FIO readerFn) = fio
+      async.TryWith (readerFn env, fun exn ->
+        let (FIO handlerReaderFn) = handler exn
+        handlerReaderFn env
+      )
