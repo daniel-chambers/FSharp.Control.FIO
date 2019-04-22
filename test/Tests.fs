@@ -68,8 +68,27 @@ let rec readInputFromConsole () =
       )
   }
 
+let delay x = fio {
+  do! Console.writeLine <| sprintf "Delaying %i" x
+  do! FIO.fromAsync <| Async.Sleep (x * 1000)
+  do! Console.writeLine <| sprintf "Finished delaying %i" x
+  return x
+}
+
+let testConcurrency : FIO<_, exn, unit> = fio {
+  let inline (<!>) x y = Concurrently.mapResult x y
+  let inline (<*>) x y = Concurrently.apply x y
+  return! Concurrently.run (
+    printfn "Finished %i %i %i"
+    <!> (FIO.concurrently <| delay 5)
+    <*> (FIO.concurrently <| delay 2)
+    <*> (FIO.concurrently <| delay 3)
+  )
+}
+
 [<EntryPoint>]
 let main argv =
+  testConcurrency |> FIO.runFIOSynchronously (RealEnv()) |> ignore
   let result =
     readInputFromConsole ()
     |> FIO.bind (fun line -> Persistence.persist line |> FIO.mapResult (fun _ -> line))

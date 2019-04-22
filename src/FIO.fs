@@ -8,21 +8,27 @@ open System.Threading
 type FIO<'Env, 'Error, 'Result> =
   private | FIO of ('Env -> Async<Result<'Result, 'Error>>)
 
-[<RequireQualifiedAccess>]
-module FIO =
+[<NoEquality;NoComparison>]
+type Concurrently<'Env, 'Error, 'Result> =
+  private | Concurrently of timeout : int * start : (int * 'Env -> Async<Async<Result<'Result, 'Error>>>)
 
-  open System.Threading.Tasks
-
-  let inline private asyncMap fn async' = async.Bind(async', async.Return << fn)
-  let inline private asyncApply aFn async' = async.Bind(aFn, fun fn -> async.Bind(async', async.Return << fn))
-  let inline private resultApply rFn result =
+[<AutoOpen>]
+module internal Utilities =
+  let inline internal asyncMap fn async' = async.Bind(async', async.Return << fn)
+  let inline internal asyncApply aFn async' = async.Bind(aFn, fun fn -> async.Bind(async', async.Return << fn))
+  let inline internal resultApply rFn result =
     match (rFn, result) with
     | (Ok rFn,  Ok x   ) -> Ok (rFn x)
     | (Error e, _      ) -> Error e
     | (_      , Error e) -> Error e
-  let inline choiceEither fn1 fn2 = function
+  let inline internal choiceEither fn1 fn2 = function
     | Choice1Of2 x -> fn1 x
     | Choice2Of2 x -> fn2 x
+
+[<RequireQualifiedAccess>]
+module FIO =
+
+  open System.Threading.Tasks
 
   let runFIOAsync (env : 'Env) (FIO readerFn) : Async<Result<'Result, 'Error>> =
     readerFn env
@@ -278,7 +284,52 @@ module FIO =
       }
       traverseIgnore (fun _ -> fio) infiniteSeq
 
-    //TODO: Concurrency support
+  let concurrently (fio : FIO<'Env, 'Error, 'Result>) =
+    Concurrently (Timeout.Infinite, fun (timeout, env) ->
+      let (FIO readerFn) = fio
+      Async.StartChild (readerFn env, timeout)
+    )
+
+[<RequireQualifiedAccess>]
+module Concurrently =
+
+  let run (Concurrently (timeout, start) : Concurrently<'Env, 'Error, 'Result>) : FIO<'Env, 'Error, 'Result> =
+    FIO <| fun env -> async {
+      let! child = start (timeout, env)
+      return! child
+    }
+
+  let succeed (x : 'Result) : Concurrently<'Env, 'Error, 'Result> =
+    Concurrently (Timeout.Infinite, fun _ -> async.Return << async.Return <| Ok x)
+
+  let mapResult (fn : 'ResultA -> 'ResultB) (Concurrently (timeout, start) : Concurrently<'Env, 'Error, 'ResultA>) =
+    Concurrently (timeout, start >> asyncMap (asyncMap (Result.map fn)))
+
+  let mapError (fn : 'ErrorA -> 'ErrorB) (Concurrently (timeout, start) : Concurrently<'Env, 'ErrorA, 'Result>) =
+    Concurrently (timeout, start >> asyncMap (asyncMap (Result.mapError fn)))
+
+  let inline bimap (errorFn : 'ErrorA -> 'ErrorB) (resultFn : 'ResultA -> 'ResultB) =
+    mapError errorFn >> mapResult resultFn
+
+  let apply (Concurrently (fnTimeout, fnStart) : Concurrently<'Env, 'Error, 'ResultA -> 'ResultB>) (Concurrently (xTimeout, xStart) : Concurrently<'Env, 'Error, 'ResultA>) =
+    let inline (<!>) x y = asyncMap x y
+    let inline (<*>) x y = asyncApply x y
+    let inline minTimeout x y =
+      match (x, y) with
+      | (Timeout.Infinite, y) -> y
+      | (x, Timeout.Infinite) -> x
+      | (x, y) -> min x y
+
+    Concurrently (minTimeout fnTimeout xTimeout, fun startParams -> async {
+      let! fnChild = fnStart startParams
+      let! xChild =  xStart startParams
+      return resultApply <!> fnChild <*> xChild
+    })
+
+    //TODO: FSharpPlus tests
+    //TODO: Timeout
+    //TODO: Alternative instance
+    //TODO: Could this be better done with Fibers as a concept?
 
 [<AutoOpen>]
 module FIOAutoOpen =
@@ -328,3 +379,19 @@ type FIO<'Env, 'Error, 'Result> with
         let (FIO handlerReaderFn) = handler exn
         handlerReaderFn env
       )
+
+type Concurrently<'Env, 'Error, 'Result> with
+  static member inline Map (c : Concurrently<'Env, 'Error, 'ResultA>, f : 'ResultA -> 'ResultB) =
+    Concurrently.mapResult f c
+
+  static member inline MapFirst (c : Concurrently<'Env, 'ErrorA, 'Result>, f : 'ErrorA -> 'ErrorB) =
+    Concurrently.mapError f c
+
+  static member inline Bimap (c : Concurrently<'Env, 'ErrorA, 'ResultA>, first , second) =
+    Concurrently.bimap first second c
+
+  static member inline Return x : Concurrently<'Env, 'Error, 'Result> =
+    Concurrently.succeed x
+
+  static member inline (<*>) (f : Concurrently<'Env, 'Error, 'ResultA -> 'ResultB>, x : Concurrently<'Env, 'Error, 'ResultA>) =
+    Concurrently.apply f x
