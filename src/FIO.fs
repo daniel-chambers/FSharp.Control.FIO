@@ -10,7 +10,7 @@ type FIO<'Env, 'Error, 'Result> =
 
 [<NoEquality;NoComparison>]
 type Concurrently<'Env, 'Error, 'Result> =
-  private | Concurrently of timeout : int * start : (int * 'Env -> Async<Async<Result<'Result, 'Error>>>)
+  private | Concurrently of (int * 'Env -> Async<Async<Result<'Result, 'Error>>>)
 
 [<AutoOpen>]
 module internal Utilities =
@@ -285,51 +285,60 @@ module FIO =
       traverseIgnore (fun _ -> fio) infiniteSeq
 
   let concurrently (fio : FIO<'Env, 'Error, 'Result>) =
-    Concurrently (Timeout.Infinite, fun (timeout, env) ->
+    Concurrently <| fun (timeout, env) ->
       let (FIO readerFn) = fio
       Async.StartChild (readerFn env, timeout)
-    )
 
 [<RequireQualifiedAccess>]
 module Concurrently =
 
   let inline ofFIO (fio : FIO<'Env, 'Error, 'Result>) = FIO.concurrently fio
 
-  let run (Concurrently (timeout, start) : Concurrently<'Env, 'Error, 'Result>) : FIO<'Env, 'Error, 'Result> =
+  let run (Concurrently start : Concurrently<'Env, 'Error, 'Result>) : FIO<'Env, 'Error, 'Result> =
     FIO <| fun env -> async {
-      let! child = start (timeout, env)
+      let! child = start (Timeout.Infinite, env)
       return! child
     }
 
-  let withTimeout (timespan : TimeSpan) (Concurrently (_, start) : Concurrently<'Env, 'Error, 'Result>) =
-    Concurrently (int timespan.TotalMilliseconds, start)
+  let runWithTimeout (timespan : TimeSpan) (Concurrently start : Concurrently<'Env, 'Error, 'Result>) =
+    FIO <| fun env -> async {
+      let! child = start (int timespan.TotalMilliseconds, env)
+      try
+        return! asyncMap (Result.mapError Choice1Of2) child
+      with
+      | :? TimeoutException as e -> return Error <| Choice2Of2 e
+    }
+
+  let runWithTimeout' (mapError : TimeoutException -> 'Error) (timespan : TimeSpan) (Concurrently start : Concurrently<'Env, 'Error, 'Result>) =
+    FIO <| fun env -> async {
+      let! child = start (int timespan.TotalMilliseconds, env)
+      try
+        return! child
+      with
+      | :? TimeoutException as e -> return Error <| mapError e
+    }
 
   let succeed (x : 'Result) : Concurrently<'Env, 'Error, 'Result> =
-    Concurrently (Timeout.Infinite, fun _ -> async.Return << async.Return <| Ok x)
+    Concurrently <| fun _ -> async.Return << async.Return <| Ok x
 
-  let mapResult (fn : 'ResultA -> 'ResultB) (Concurrently (timeout, start) : Concurrently<'Env, 'Error, 'ResultA>) =
-    Concurrently (timeout, start >> asyncMap (asyncMap (Result.map fn)))
+  let mapResult (fn : 'ResultA -> 'ResultB) (Concurrently start : Concurrently<'Env, 'Error, 'ResultA>) =
+    Concurrently (start >> asyncMap (asyncMap (Result.map fn)))
 
-  let mapError (fn : 'ErrorA -> 'ErrorB) (Concurrently (timeout, start) : Concurrently<'Env, 'ErrorA, 'Result>) =
-    Concurrently (timeout, start >> asyncMap (asyncMap (Result.mapError fn)))
+  let mapError (fn : 'ErrorA -> 'ErrorB) (Concurrently start : Concurrently<'Env, 'ErrorA, 'Result>) =
+    Concurrently (start >> asyncMap (asyncMap (Result.mapError fn)))
 
   let inline bimap (errorFn : 'ErrorA -> 'ErrorB) (resultFn : 'ResultA -> 'ResultB) =
     mapError errorFn >> mapResult resultFn
 
-  let apply (Concurrently (fnTimeout, fnStart) : Concurrently<'Env, 'Error, 'ResultA -> 'ResultB>) (Concurrently (xTimeout, xStart) : Concurrently<'Env, 'Error, 'ResultA>) =
+  let apply (Concurrently fnStart : Concurrently<'Env, 'Error, 'ResultA -> 'ResultB>) (Concurrently xStart : Concurrently<'Env, 'Error, 'ResultA>) =
     let inline (<!>) x y = asyncMap x y
     let inline (<*>) x y = asyncApply x y
-    let inline minTimeout x y =
-      match (x, y) with
-      | (Timeout.Infinite, y) -> y
-      | (x, Timeout.Infinite) -> x
-      | (x, y) -> min x y
 
-    Concurrently (minTimeout fnTimeout xTimeout, fun startParams -> async {
+    Concurrently <| fun startParams -> async {
       let! fnChild = fnStart startParams
       let! xChild =  xStart startParams
       return resultApply <!> fnChild <*> xChild
-    })
+    }
 
     //TODO: FSharpPlus tests
     //TODO: Timeout

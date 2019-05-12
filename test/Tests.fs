@@ -75,10 +75,10 @@ let delay x = fio {
   return x
 }
 
-let testConcurrency : FIO<_, exn, unit> = fio {
+let testConcurrency (timeout : TimeSpan) = fio {
   let inline (<!>) x y = Concurrently.mapResult x y
   let inline (<*>) x y = Concurrently.apply x y
-  return! Concurrently.run (
+  return! Concurrently.runWithTimeout timeout (
     printfn "Finished %i %i %i"
     <!> (FIO.concurrently <| delay 5)
     <*> (FIO.concurrently <| delay 2)
@@ -88,7 +88,8 @@ let testConcurrency : FIO<_, exn, unit> = fio {
 
 [<EntryPoint>]
 let main argv =
-  testConcurrency |> FIO.runFIOSynchronously (RealEnv()) |> ignore
+  testConcurrency (TimeSpan.FromSeconds 2.) |> FIO.runFIOSynchronously (RealEnv()) |> printfn "Concurrently Result: %A"
+  testConcurrency (TimeSpan.FromSeconds 10.) |> FIO.runFIOSynchronously (RealEnv()) |> printfn "Concurrently Result: %A"
   let result =
     readInputFromConsole ()
     |> FIO.bind (fun line -> Persistence.persist line |> FIO.mapResult (fun _ -> line))
