@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="FSharpPlusTests.fs" />
     <Compile Include="Tests.fs" />
+    <Compile Include="Program.fs" />
   </ItemGroup>
   <Import Project="..\.paket\Paket.Restore.targets" />
 </Project>

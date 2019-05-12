@@ -1,100 +1,109 @@
-module FSharp.Control.FIO.Test.Tests
+module FSharp.Control.FIO.Tests
 
-open System
-open System.IO
-open FSharp.Control.FIO
+open Expecto
+open Expecto.Flip
+open FsCheck
 
-type IConsoleService =
-  abstract member WriteLine : string -> FIO<'Env, 'Error, unit>
-  abstract member ReadLine : unit -> FIO<'Env, IOException, string>
+type FIOGen() =
+  static member FIO() : Arbitrary<FIO<'Env, 'Error, 'Result>> =
+    Arb.fromGen <| Gen.oneof [
+      Gen.map FIO.succeed Arb.generate<'Result>
+      Gen.map FIO.fail Arb.generate<'Error>
+    ]
 
-let consoleService =
-  { new IConsoleService with
-      member __.WriteLine str =
-        FIO.fromPureSync (fun () -> Console.WriteLine str)
-      member __.ReadLine () =
-        FIO.fromPureSync' (fun () ->
-          try
-            Ok <| Console.ReadLine ()
-          with
-          | :? IOException as e -> Error e
-        )
-  }
+let fsCheckConfig = { FsCheckConfig.defaultConfig with arbitrary = [typeof<FIOGen>]  }
 
-type IHasConsole =
-  abstract member Console : IConsoleService
+let testFIOProperty test = testPropertyWithConfig fsCheckConfig test
 
-module Console =
-  let writeLine str = FIO.accessEnvM (fun (c : #IHasConsole) -> c.Console.WriteLine str)
-  let readLine () = FIO.accessEnvM (fun (c : #IHasConsole) -> c.Console.ReadLine ())
+let functorLawsResultSide =
+  testList "Functor laws (result side)" [
+    testFIOProperty "Identity" <| fun (fio : FIO<unit, unit, int>) ->
+      let idMapped = FIO.runFIOSynchronously () (FIO.mapResult id fio)
+      let unmapped = FIO.runFIOSynchronously () fio
+      unmapped |> Expect.equal "Should equal" idMapped
 
-let persistenceImpl str =
-  FIO.fromPureSync (fun () -> Console.WriteLine ("Persisted: " + str))
+    testFIOProperty "Composition" <| fun (fio : FIO<unit, unit, byte>) (f : string -> int) (g : byte -> string) ->
+      let composedInside  = FIO.runFIOSynchronously () (FIO.mapResult (f << g) fio)
+      let composedOutside = FIO.runFIOSynchronously () (FIO.mapResult f << FIO.mapResult g <| fio)
+      composedInside |> Expect.equal "Should equal" composedOutside
+  ]
 
-type IHasPersistence =
-  abstract member Persist : string -> FIO<'r, 'Error, unit>
+let functorLawsErrorSide =
+  testList "Functor laws (error side)" [
+    testFIOProperty "Identity" <| fun (fio : FIO<unit, int, unit>) ->
+      let idMapped = FIO.runFIOSynchronously () (FIO.mapError id fio)
+      let unmapped = FIO.runFIOSynchronously () fio
+      unmapped |> Expect.equal "Should equal" idMapped
 
-module Persistence =
-  let persist str = FIO.accessEnvM (fun (p : #IHasPersistence) -> p.Persist str)
+    testFIOProperty "Composition" <| fun (fio : FIO<unit, byte, unit>) (f : string -> int) (g : byte -> string) ->
+      let composedInside  = FIO.runFIOSynchronously () (FIO.mapError (f << g) fio)
+      let composedOutside = FIO.runFIOSynchronously () (FIO.mapError f << FIO.mapError g <| fio)
+      composedInside |> Expect.equal "Should equal" composedOutside
+  ]
 
-type RealEnv() =
-  interface IHasConsole with member __.Console = consoleService
-  interface IHasPersistence with member __.Persist str = persistenceImpl str
+let applicativeLaws =
+  let inline (<*>) fn x = FIO.apply fn x
+  testList "Applicative laws" [
+    testFIOProperty "Identity" <| fun (fio : FIO<unit, unit, int>) ->
+      let idMapped = FIO.runFIOSynchronously () (FIO.succeed id <*> fio)
+      let unmapped = FIO.runFIOSynchronously () fio
+      unmapped |> Expect.equal "Should equal" idMapped
 
-type Errors =
-  | ConsoleException of IOException
-  | NoInput
+    testFIOProperty "Composition" <| fun (u : FIO<unit, unit, string -> int>) (v : FIO<unit, unit, byte -> string>) (w : FIO<unit, unit, byte>) ->
+      let withCompositionOp = FIO.runFIOSynchronously () (FIO.succeed (<<) <*> u <*> v <*> w)
+      let composedDirectly  = FIO.runFIOSynchronously () (u <*> (v <*> w))
+      withCompositionOp |> Expect.equal "Should equal" composedDirectly
 
-let validateInput input : FIO<'Env, Errors, string> =
-  if not <| String.IsNullOrWhiteSpace input then
-    FIO.succeed input
-  else
-    FIO.fail NoInput
+    testFIOProperty "Homomorphism" <| fun (fn : string -> int) x ->
+      let invokedInside = FIO.runFIOSynchronously () (FIO.succeed fn <*> FIO.succeed x)
+      let invokedOutside  = FIO.runFIOSynchronously () (FIO.succeed (fn x))
+      invokedInside |> Expect.equal "Should equal" invokedOutside
 
-let rec readInputFromConsole () =
-  fio {
-    do! Console.writeLine "Enter some input:"
-    let! line = Console.readLine () |> FIO.mapError ConsoleException
-    return!
-      validateInput line
-      |> FIO.catch (fun error ->
-        match error with
-        | NoInput ->
-          fio {
-            do! Console.writeLine "Try again."
-            return! readInputFromConsole ()
-          }
-        | ex -> FIO.fail ex
-      )
-  }
+    testFIOProperty "Interchange" <| fun (fn : FIO<unit, unit, string -> int>) x ->
+      let pureArg    = FIO.runFIOSynchronously () (fn <*> FIO.succeed x)
+      let pureInvoke = FIO.runFIOSynchronously () (FIO.succeed (fun f -> f x) <*> fn)
+      pureArg |> Expect.equal "Should equal" pureInvoke
 
-let delay x = fio {
-  do! Console.writeLine <| sprintf "Delaying %i" x
-  do! FIO.fromAsync <| Async.Sleep (x * 1000)
-  do! Console.writeLine <| sprintf "Finished delaying %i" x
-  return x
-}
+    testFIOProperty "Functor compatibility" <| fun (fn : string -> int) (x : FIO<unit, unit, string>) ->
+      let map           = FIO.runFIOSynchronously () (FIO.mapResult fn x)
+      let pureThenApply = FIO.runFIOSynchronously () (FIO.succeed fn <*> x)
+      map |> Expect.equal "Should equal" pureThenApply
+  ]
 
-let testConcurrency (timeout : TimeSpan) = fio {
-  let inline (<!>) x y = Concurrently.mapResult x y
-  let inline (<*>) x y = Concurrently.apply x y
-  return! Concurrently.runWithTimeout timeout (
-    printfn "Finished %i %i %i"
-    <!> (FIO.concurrently <| delay 5)
-    <*> (FIO.concurrently <| delay 2)
-    <*> (FIO.concurrently <| delay 3)
-  )
-}
+let monadLaws =
+  let inline (<*>) fn x = FIO.apply fn x
+  let inline (>>=) x fn = FIO.bind fn x
+  testList "Monad laws" [
+    testFIOProperty "Left identity" <| fun (f : string -> FIO<unit, unit, int>) x ->
+      let viaBind  = FIO.runFIOSynchronously () (FIO.succeed x >>= f)
+      let straight = FIO.runFIOSynchronously () (f x)
+      viaBind |> Expect.equal "Should equal" straight
 
-[<EntryPoint>]
-let main argv =
-  testConcurrency (TimeSpan.FromSeconds 2.) |> FIO.runFIOSynchronously (RealEnv()) |> printfn "Concurrently Result: %A"
-  testConcurrency (TimeSpan.FromSeconds 10.) |> FIO.runFIOSynchronously (RealEnv()) |> printfn "Concurrently Result: %A"
-  let result =
-    readInputFromConsole ()
-    |> FIO.bind (fun line -> Persistence.persist line |> FIO.mapResult (fun _ -> line))
-    |> FIO.runFIOSynchronously (RealEnv())
-  match result with
-  | Ok str -> Console.WriteLine ("Your input: " + str)
-  | Error err -> Console.WriteLine ("Error: " + err.ToString())
-  0
+    testFIOProperty "Right identity" <| fun (fio : FIO<unit, unit, int>) ->
+      let viaBind  = FIO.runFIOSynchronously () (fio >>= FIO.succeed)
+      let straight = FIO.runFIOSynchronously () fio
+      viaBind |> Expect.equal "Should equal" straight
+
+    testFIOProperty "Associativity" <| fun (m : FIO<unit, unit, string>) (f : string -> FIO<unit, unit, int>) (g : int -> FIO<unit, unit, byte>) ->
+      let leftAssoc  = FIO.runFIOSynchronously () ((m >>= f) >>= g)
+      let rightAssoc = FIO.runFIOSynchronously () (m >>= (fun x -> f x >>= g))
+      leftAssoc |> Expect.equal "Should equal" rightAssoc
+
+    testFIOProperty "Functor compatibility" <| fun (fn : string -> int) (x : FIO<unit, unit, string>) ->
+      let map          = FIO.runFIOSynchronously () (FIO.mapResult fn x)
+      let bindThenPure = FIO.runFIOSynchronously () (x >>= (FIO.succeed << fn))
+      map |> Expect.equal "Should equal" bindThenPure
+
+    testFIOProperty "Applicative sequencing compatibility" <| fun (x : FIO<unit, unit, string>) (y : FIO<unit, unit, int>) ->
+      let applicativeSequence = FIO.runFIOSynchronously () (FIO.succeed (fun _ b -> b) <*> x <*> y)
+      let monadSequence = FIO.runFIOSynchronously () (x >>= (fun _ -> y))
+      applicativeSequence |> Expect.equal "Should equal" monadSequence
+  ]
+
+let tests =
+  testList "FIO" [
+    functorLawsResultSide
+    functorLawsErrorSide
+    applicativeLaws
+    monadLaws
+  ]

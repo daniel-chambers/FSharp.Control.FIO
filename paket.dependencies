@@ -2,5 +2,7 @@ source https://www.nuget.org/api/v2
 framework: netstandard2.0, netcoreapp2.2
 storage: none
 
+nuget Expecto ~> 8.10
+nuget Expecto.FsCheck ~> 8.10
 nuget FSharp.Core ~> 4.5
 nuget FSharpPlus ~> 1.0
