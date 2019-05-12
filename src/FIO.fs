@@ -293,11 +293,16 @@ module FIO =
 [<RequireQualifiedAccess>]
 module Concurrently =
 
+  let inline ofFIO (fio : FIO<'Env, 'Error, 'Result>) = FIO.concurrently fio
+
   let run (Concurrently (timeout, start) : Concurrently<'Env, 'Error, 'Result>) : FIO<'Env, 'Error, 'Result> =
     FIO <| fun env -> async {
       let! child = start (timeout, env)
       return! child
     }
+
+  let withTimeout (timespan : TimeSpan) (Concurrently (_, start) : Concurrently<'Env, 'Error, 'Result>) =
+    Concurrently (int timespan.TotalMilliseconds, start)
 
   let succeed (x : 'Result) : Concurrently<'Env, 'Error, 'Result> =
     Concurrently (Timeout.Infinite, fun _ -> async.Return << async.Return <| Ok x)
