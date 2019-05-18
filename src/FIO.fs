@@ -76,7 +76,7 @@ module FIO =
     FIO <| fun env ->
       let inline (<!>) f x = asyncMap f x
       let inline (<*>) f x = asyncApply f x
-      (resultApply) <!> fnReaderFn env <*> argReaderFn env
+      resultApply <!> fnReaderFn env <*> argReaderFn env
 
   let bind (fn : 'ResultA -> FIO<'Env, 'Error, 'ResultB>) (FIO readerFn : FIO<'Env, 'Error, 'ResultA>) =
     FIO <| fun env -> async {
