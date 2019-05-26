@@ -2,8 +2,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <GeneratedAssemblyInfoFile>obj\AssemblyInfo.Generated.fs</GeneratedAssemblyInfoFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Condition="Exists('$(GeneratedAssemblyInfoFile)')" Include="$(GeneratedAssemblyInfoFile)" />
     <Compile Include="FIO.fs" />
   </ItemGroup>
   <Import Project="..\.paket\Paket.Restore.targets" />

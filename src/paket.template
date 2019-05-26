@@ -1,0 +1,16 @@
+﻿type project
+id FSharp.Control.FIO
+description
+  F# version of Scala's ZIO Environment
+authors
+  Daniel Chambers & Contributors
+owners
+  Daniel Chambers & Contributors
+copyright
+  Copyright 2019
+summary
+  A library that provides an idiomatic F# API for Microsoft Azure services.
+licenseurl https://github.com/daniel-chambers/FSharp.Control.FIO/blob/master/LICENCE.txt
+projecturl https://github.com/daniel-chambers/FSharp.Control.FIO
+tags
+  f#, fsharp, monad, async, concurrency, applicative, functor
