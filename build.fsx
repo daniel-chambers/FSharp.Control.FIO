@@ -123,99 +123,6 @@ Target.create "GitHubRelease" <| fun _ ->
   |> Async.RunSynchronously
 
 
-// --------------------------------------------------------------------------------------
-// Generate the documentation
-
-// Paths with template/source/output locations
-let bin        = __SOURCE_DIRECTORY__ @@ "./src/bin/Release"
-let content    = __SOURCE_DIRECTORY__ @@ "docsrc/content"
-let output     = __SOURCE_DIRECTORY__ @@ "docs"
-let files      = __SOURCE_DIRECTORY__ @@ "docsrc/files"
-let templates  = __SOURCE_DIRECTORY__ @@ "docsrc/tools/templates"
-let formatting = __SOURCE_DIRECTORY__ @@ "packages/formatting/FSharp.Formatting"
-let docTemplate = "docpage.cshtml"
-
-let githubReleaseUser = Environment.environVarOrDefault "github_release_user" gitHubOwner
-let githubLink = sprintf "https://github.com/%s/%s" githubReleaseUser gitHubName
-
-// Specify more information about your project
-let info =
-  [ "project-name", "FIO"
-    "project-author", "Daniel Chambers"
-    "project-summary", "F# version of Scala's ZIO Environment"
-    "project-github", githubLink
-    "project-nuget", "http://nuget.org/packages/FSharp.Control.FIO" ]
-
-let root = website
-
-let layoutRootsAll = new System.Collections.Generic.Dictionary<string, string list>()
-layoutRootsAll.Add("en", [ templates;
-                           formatting @@ "templates"
-                           formatting @@ "templates/reference" ])
-
-Target.create "CleanDocs" (fun _ ->
-  Shell.cleanDirs ["docs"]
-)
-
-Target.create "ReferenceDocs" (fun _ ->
-  Directory.ensure (output @@ "reference")
-
-  [ "./src/bin/Release/netstandard2.0/FSharp.Control.FIO.dll" ]
-  |> FSFormatting.createDocsForDlls (fun args ->
-    { args with
-        OutputDirectory = output @@ "reference"
-        LayoutRoots =  layoutRootsAll.["en"]
-        ProjectParameters =  ("root", root)::info
-        SourceRepository = githubLink @@ "tree/master" }
-       )
-)
-
-let copyFiles () =
-  Shell.copyRecursive files output true
-  |> Trace.logItems "Copying file: "
-  Directory.ensure (output @@ "content")
-  Shell.copyRecursive (formatting @@ "styles") (output @@ "content") true
-  |> Trace.logItems "Copying styles and scripts: "
-
-Target.create "Docs" (fun _ ->
-  File.delete "docsrc/content/release-notes.md"
-  Shell.copyFile "docsrc/content/" "RELEASE_NOTES.md"
-  Shell.rename "docsrc/content/release-notes.md" "docsrc/content/RELEASE_NOTES.md"
-
-  File.delete "docsrc/content/license.md"
-  Shell.copyFile "docsrc/content/" "LICENSE.txt"
-  Shell.rename "docsrc/content/license.md" "docsrc/content/LICENSE.txt"
-
-  DirectoryInfo.getSubDirectories (DirectoryInfo.ofPath templates)
-  |> Seq.iter (fun d ->
-    let name = d.Name
-    if name.Length = 2 || name.Length = 3 then
-      layoutRootsAll.Add(
-        name, [templates @@ name
-               formatting @@ "templates"
-               formatting @@ "templates/reference" ]))
-  copyFiles ()
-
-  for dir in  [ content; ] do
-    let langSpecificPath(lang, path:string) =
-      path.Split([|'/'; '\\'|], System.StringSplitOptions.RemoveEmptyEntries)
-      |> Array.exists(fun i -> i = lang)
-    let layoutRoots =
-      let key = layoutRootsAll.Keys |> Seq.tryFind (fun i -> langSpecificPath(i, dir))
-      match key with
-      | Some lang -> layoutRootsAll.[lang]
-      | None -> layoutRootsAll.["en"] // "en" is the default language
-
-    FSFormatting.createDocs (fun args ->
-      { args with
-          Source = content
-          OutputDirectory = output
-          LayoutRoots = layoutRoots
-          ProjectParameters  = ("root", root)::info
-          Template = docTemplate } )
-)
-
-Target.create "GenerateDocs" ignore
 Target.create "BeginRelease" ignore
 Target.create "PublishRelease" ignore
 
@@ -247,10 +154,5 @@ open Fake.Core.TargetOperators
 // Only do a GitTagAndPush if we're pushing a new version
 "GitTagAndPush"
 ==> "PaketPush"
-
-"CleanDocs"
-  ==>"Docs"
-  ==> "ReferenceDocs"
-  ==> "GenerateDocs"
 
 Target.runOrDefault "PaketPack"
