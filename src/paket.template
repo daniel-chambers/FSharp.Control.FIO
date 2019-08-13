@@ -9,7 +9,7 @@ owners
 copyright
   Copyright 2019
 summary
-  A library that provides an idiomatic F# API for Microsoft Azure services.
+  A library that provides a monad that handles async, errors and environmental context
 licenseurl https://github.com/daniel-chambers/FSharp.Control.FIO/blob/master/LICENCE.txt
 projecturl https://github.com/daniel-chambers/FSharp.Control.FIO
 tags
